@@ -21,9 +21,9 @@ func main() {
 	
 	handler := http.FileServer(http.Dir("."))
 	router.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", handler)))
-	router.HandleFunc("GET /healthz", handlerReadiness)
-	router.HandleFunc("GET /metrics", apiCfg.handlerMetrics)
-	router.HandleFunc("POST /reset", apiCfg.handlerMetricsReset)
+	router.HandleFunc("GET /api/healthz", handlerReadiness)
+	router.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
+	router.HandleFunc("POST /admin/reset", apiCfg.handlerMetricsReset)
 	server.ListenAndServe()
 }
 
@@ -42,10 +42,16 @@ func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 	visits := cfg.fileserverHits.Load()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
 
-	body := []byte(fmt.Sprintf("Hits: %v", visits))
+	html := `<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+	</html>`
+	body := []byte(fmt.Sprintf(html, visits))
 	_, err := w.Write(body)
 	if err != nil {
 		fmt.Printf("%s", err)
@@ -58,7 +64,7 @@ func (cfg *apiConfig) handlerMetricsReset(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 
-	body := []byte(fmt.Sprintf("Hits: %v", 0))
+	body := []byte("Visits have been reset to 0")
 	_, err := w.Write(body)
 	if err != nil {
 		fmt.Sprintf("%s", err)
