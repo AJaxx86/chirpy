@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"fmt"
 	"sync/atomic"
+	"encoding/json"
 )
 
 type apiConfig struct {
@@ -18,13 +19,67 @@ func main() {
 		Addr:    ":8080",
 		Handler: router,
 	}
-	
+
 	handler := http.FileServer(http.Dir("."))
 	router.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", handler)))
 	router.HandleFunc("GET /api/healthz", handlerReadiness)
+	router.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	router.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	router.HandleFunc("POST /admin/reset", apiCfg.handlerMetricsReset)
 	server.ListenAndServe()
+}
+
+
+func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Body string `json:"body"`
+	}
+	type response struct {
+		Valid bool `json:"valid"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	req := &request{}
+	err := decoder.Decode(req)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if len(req.Body) == 0 {
+		respondWithError(w, http.StatusBadRequest, "invalid body: empty")
+		return
+	}
+	if len(req.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "invalid body: too long")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, response{Valid: true})
+}
+
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	type errorResponse struct {
+		Error string
+	}
+	respondWithJSON(w, code, errorResponse{Error: msg})
+}
+
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, err = w.Write(body)
+	if err != nil {
+		fmt.Printf("%s", err)
+	}
 }
 
 
