@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"encoding/json"
 )
@@ -35,7 +36,7 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 		Body string `json:"body"`
 	}
 	type response struct {
-		Valid bool `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -55,7 +56,25 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, response{Valid: true})
+	cleanedBody := cleanChirp(req.Body)
+	respondWithJSON(w, http.StatusOK, response{CleanedBody: cleanedBody})
+}
+
+
+func cleanChirp(chirp string) string {
+	profanity := []string{"kerfuffle", "sharbert", "fornax"}
+	words := strings.Split(chirp, " ")
+	
+	for i, w := range(words) {
+		for _, prof := range(profanity) {
+			if strings.EqualFold(w, prof) {
+				words[i] = "****"
+			}
+		}
+	}
+
+	cleaned := strings.Join(words, " ")
+	return cleaned
 }
 
 
