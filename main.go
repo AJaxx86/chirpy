@@ -15,7 +15,7 @@ import (
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
-	dbQueries *database.Queries
+	db *database.Queries
 }
 
 
@@ -25,9 +25,10 @@ func main() {
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Sprintf("Error loading DB: %s", err)
+		return
 	}
 
-	apiCfg := apiConfig{dbQueries: database.New(db)}
+	apiCfg := apiConfig{db: database.New(db)}
 	router := http.NewServeMux()
 	server := &http.Server{
 		Addr:    ":8080",
@@ -37,10 +38,35 @@ func main() {
 	handler := http.FileServer(http.Dir("."))
 	router.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", handler)))
 	router.HandleFunc("GET /api/healthz", handlerReadiness)
+	router.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
 	router.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	router.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
-	router.HandleFunc("POST /admin/reset", apiCfg.handlerMetricsReset)
+	router.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	server.ListenAndServe()
+}
+
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	type errorResponse struct {
+		Error string
+	}
+	respondWithJSON(w, code, errorResponse{Error: msg})
+}
+
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, err = w.Write(body)
+	if err != nil {
+		fmt.Printf("%s", err)
+	}
 }
 
 
@@ -70,14 +96,14 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cleanedBody := cleanChirp(req.Body)
-	respondWithJSON(w, http.StatusOK, response{CleanedBody: cleanedBody})
+	respondWithJSON(w, http.StatusCreated, response{CleanedBody: cleanedBody})
 }
 
 
 func cleanChirp(chirp string) string {
 	profanity := []string{"kerfuffle", "sharbert", "fornax"}
 	words := strings.Split(chirp, " ")
-	
+
 	for i, w := range(words) {
 		for _, prof := range(profanity) {
 			if strings.EqualFold(w, prof) {
@@ -91,30 +117,6 @@ func cleanChirp(chirp string) string {
 }
 
 
-func respondWithError(w http.ResponseWriter, code int, msg string) {
-	type errorResponse struct {
-		Error string
-	}
-	respondWithJSON(w, code, errorResponse{Error: msg})
-}
-
-
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_, err = w.Write(body)
-	if err != nil {
-		fmt.Printf("%s", err)
-	}
-}
-
-
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
@@ -124,6 +126,34 @@ func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Printf("%s", err)
 	}
+}
+
+
+func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Email string `json:"email"`
+	}
+
+	req := &request{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(req); err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.Email == "" || !strings.Contains(req.Email, "@") {
+		respondWithError(w, http.StatusBadRequest, "invalid email")
+		return
+	}
+
+	ctx := r.Context()
+	user, err := cfg.db.CreateUser(ctx, req.Email)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, user)
 }
 
 
@@ -146,12 +176,21 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 
-func (cfg *apiConfig) handlerMetricsReset(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
+	if os.Getenv("PLATFORM") != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
 	cfg.fileserverHits.Swap(0)
+
+	if err := cfg.db.ClearUsersTable(r.Context()); err != nil {
+		fmt.Sprintf("%s", err)
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
-
-	body := []byte("Visits have been reset to 0")
+	body := []byte("Visits have been reset to 0, and all users removed.")
 	_, err := w.Write(body)
 	if err != nil {
 		fmt.Sprintf("%s", err)
