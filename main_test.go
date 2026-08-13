@@ -6,6 +6,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/AJaxx86/chirpy/internal/database"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestCleanChirp(t *testing.T) {
@@ -36,7 +40,7 @@ func TestHandlerValidateChirp(t *testing.T) {
 		wantStatus int
 		wantBody   string
 	}{
-		{name: "accepts and cleans chirp", body: `{"body":"This is Kerfuffle"}`, wantStatus: http.StatusOK, wantBody: `{"cleaned_body":"This is ****"}`},
+		{name: "accepts and cleans chirp", body: `{"body":"This is Kerfuffle"}`, wantStatus: http.StatusCreated, wantBody: `{"cleaned_body":"This is ****"}`},
 		{name: "rejects malformed JSON", body: `{`, wantStatus: http.StatusBadRequest, wantBody: ""},
 		{name: "rejects empty chirp", body: `{"body":""}`, wantStatus: http.StatusBadRequest, wantBody: `{"Error":"invalid body: empty"}`},
 		{name: "rejects chirp over 140 characters", body: `{"body":"` + strings.Repeat("a", 141) + `"}`, wantStatus: http.StatusBadRequest, wantBody: `{"Error":"invalid body: too long"}`},
@@ -110,7 +114,7 @@ func TestHandlerReadiness(t *testing.T) {
 	}
 }
 
-func TestMetricsHandlers(t *testing.T) {
+func TestHandlerMetrics(t *testing.T) {
 	cfg := apiConfig{}
 	cfg.fileserverHits.Store(7)
 
@@ -126,16 +130,91 @@ func TestMetricsHandlers(t *testing.T) {
 		t.Errorf("metrics body does not include visit count: %q", metricsRec.Body.String())
 	}
 
-	resetRec := httptest.NewRecorder()
-	cfg.handlerMetricsReset(resetRec, httptest.NewRequest(http.MethodPost, "/admin/reset", nil))
-	if resetRec.Code != http.StatusOK {
-		t.Errorf("reset status = %d, want %d", resetRec.Code, http.StatusOK)
+}
+
+func TestHandlerCreateUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create mock database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := apiConfig{db: database.New(db)}
+	createdAt := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs("person@example.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email"}).
+			AddRow("3e9f4e1f-3a2a-4d41-a31f-616b84dcd068", createdAt, createdAt, "person@example.com"))
+
+	rec := httptest.NewRecorder()
+	cfg.handlerCreateUser(rec, httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"person@example.com"}`)))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	var response struct {
+		Email string `json:"Email"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Email != "person@example.com" {
+		t.Errorf("email = %q, want person@example.com", response.Email)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("database expectations: %v", err)
+	}
+}
+
+func TestHandlerCreateUserRejectsInvalidEmail(t *testing.T) {
+	cfg := apiConfig{}
+	rec := httptest.NewRecorder()
+	cfg.handlerCreateUser(rec, httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"invalid"}`)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"Error":"invalid email"}` {
+		t.Errorf("body = %s, want invalid-email error", got)
+	}
+}
+
+func TestHandlerReset(t *testing.T) {
+	t.Setenv("PLATFORM", "dev")
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create mock database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectExec("TRUNCATE TABLE users").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	cfg := apiConfig{db: database.New(db)}
+	cfg.fileserverHits.Store(7)
+	rec := httptest.NewRecorder()
+	cfg.handlerReset(rec, httptest.NewRequest(http.MethodPost, "/admin/reset", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	if got := cfg.fileserverHits.Load(); got != 0 {
 		t.Errorf("visit count = %d, want 0", got)
 	}
-	if got := resetRec.Body.String(); got != "Visits have been reset to 0" {
-		t.Errorf("reset body = %q, want confirmation", got)
+	if got := rec.Body.String(); got != "Visits have been reset to 0, and all users removed." {
+		t.Errorf("body = %q, want reset confirmation", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("database expectations: %v", err)
+	}
+}
+
+func TestHandlerResetForbiddenOutsideDevelopment(t *testing.T) {
+	t.Setenv("PLATFORM", "production")
+	cfg := apiConfig{}
+	rec := httptest.NewRecorder()
+	cfg.handlerReset(rec, httptest.NewRequest(http.MethodPost, "/admin/reset", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 
