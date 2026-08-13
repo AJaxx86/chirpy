@@ -11,6 +11,8 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/AJaxx86/chirpy/internal/database"
 	_ "github.com/lib/pq"
+	"github.com/google/uuid"
+	"time"
 )
 
 type apiConfig struct {
@@ -39,7 +41,7 @@ func main() {
 	router.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", handler)))
 	router.HandleFunc("GET /api/healthz", handlerReadiness)
 	router.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
-	router.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
+	router.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	router.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	router.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	server.ListenAndServe()
@@ -67,36 +69,6 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	if err != nil {
 		fmt.Printf("%s", err)
 	}
-}
-
-
-func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
-	type request struct {
-		Body string `json:"body"`
-	}
-	type response struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	decoder := json.NewDecoder(r.Body)
-	req := &request{}
-	err := decoder.Decode(req)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if len(req.Body) == 0 {
-		respondWithError(w, http.StatusBadRequest, "invalid body: empty")
-		return
-	}
-	if len(req.Body) > 140 {
-		respondWithError(w, http.StatusBadRequest, "invalid body: too long")
-		return
-	}
-
-	cleanedBody := cleanChirp(req.Body)
-	respondWithJSON(w, http.StatusCreated, response{CleanedBody: cleanedBody})
 }
 
 
@@ -129,8 +101,66 @@ func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 }
 
 
+func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	type response struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	req := &request{}
+	err := decoder.Decode(req)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if len(req.Body) == 0 {
+		respondWithError(w, http.StatusBadRequest, "invalid body: empty")
+		return
+	}
+	if len(req.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "invalid body: too long")
+		return
+	}
+
+	params := database.CreateChirpParams{
+		Body: cleanChirp(req.Body),
+		UserID: req.UserID,
+	}
+
+	chirp, err := cfg.db.CreateChirp(r.Context(), params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	res := response{
+		ID: chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	}
+	respondWithJSON(w, http.StatusCreated, res)
+}
+
+
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	type request struct {
+		Email string `json:"email"`
+	}
+	type response struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
 		Email string `json:"email"`
 	}
 
@@ -146,14 +176,20 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx := r.Context()
-	user, err := cfg.db.CreateUser(ctx, req.Email)
+	user, err := cfg.db.CreateUser(r.Context(), req.Email)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, user)
+	res := response{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	respondWithJSON(w, http.StatusCreated, res)
 }
 
 
@@ -185,12 +221,13 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	cfg.fileserverHits.Swap(0)
 
 	if err := cfg.db.ClearUsersTable(r.Context()); err != nil {
-		fmt.Sprintf("%s", err)
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
-	body := []byte("Visits have been reset to 0, and all users removed.")
+	body := []byte("Visits reset to 0, all users removed.")
 	_, err := w.Write(body)
 	if err != nil {
 		fmt.Sprintf("%s", err)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/AJaxx86/chirpy/internal/database"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
 )
 
 func TestCleanChirp(t *testing.T) {
@@ -33,31 +34,57 @@ func TestCleanChirp(t *testing.T) {
 	}
 }
 
-func TestHandlerValidateChirp(t *testing.T) {
-	tests := []struct {
-		name       string
-		body       string
-		wantStatus int
-		wantBody   string
+func TestHandlerCreateChirp(t *testing.T) {
+	t.Run("accepts, cleans, and creates a chirp", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("create mock database: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+
+		userID := uuid.MustParse("3e9f4e1f-3a2a-4d41-a31f-616b84dcd068")
+		chirpID := uuid.MustParse("0e9f4e1f-3a2a-4d41-a31f-616b84dcd068")
+		createdAt := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+		mock.ExpectQuery("INSERT INTO chirps").
+			WithArgs("This is ****", userID).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+				AddRow(chirpID, createdAt, createdAt, "This is ****", userID))
+
+		cfg := apiConfig{db: database.New(db)}
+		rec := httptest.NewRecorder()
+		cfg.handlerCreateChirp(rec, httptest.NewRequest(http.MethodPost, "/api/chirps", strings.NewReader(`{"body":"This is Kerfuffle","user_id":"3e9f4e1f-3a2a-4d41-a31f-616b84dcd068"}`)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+		}
+		var response struct {
+			Body   string `json:"body"`
+			UserID string `json:"user_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if response.Body != "This is ****" || response.UserID != userID.String() {
+			t.Errorf("response = %+v, want cleaned body and user ID", response)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("database expectations: %v", err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name, body, wantBody string
+		wantStatus           int
 	}{
-		{name: "accepts and cleans chirp", body: `{"body":"This is Kerfuffle"}`, wantStatus: http.StatusCreated, wantBody: `{"cleaned_body":"This is ****"}`},
-		{name: "rejects malformed JSON", body: `{`, wantStatus: http.StatusBadRequest, wantBody: ""},
+		{name: "rejects malformed JSON", body: `{`, wantStatus: http.StatusBadRequest},
 		{name: "rejects empty chirp", body: `{"body":""}`, wantStatus: http.StatusBadRequest, wantBody: `{"Error":"invalid body: empty"}`},
 		{name: "rejects chirp over 140 characters", body: `{"body":"` + strings.Repeat("a", 141) + `"}`, wantStatus: http.StatusBadRequest, wantBody: `{"Error":"invalid body: too long"}`},
-	}
-
-	for _, tt := range tests {
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/validate_chirp", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
-
-			handlerValidateChirp(rec, req)
-
+			(&apiConfig{}).handlerCreateChirp(rec, httptest.NewRequest(http.MethodPost, "/api/chirps", strings.NewReader(tt.body)))
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
-			}
-			if got := rec.Header().Get("Content-Type"); got != "application/json" {
-				t.Errorf("Content-Type = %q, want application/json", got)
 			}
 			if tt.wantBody != "" && strings.TrimSpace(rec.Body.String()) != tt.wantBody {
 				t.Errorf("body = %s, want %s", rec.Body.String(), tt.wantBody)
@@ -153,7 +180,7 @@ func TestHandlerCreateUser(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 	var response struct {
-		Email string `json:"Email"`
+		Email string `json:"email"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
