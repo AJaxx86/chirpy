@@ -42,6 +42,8 @@ func main() {
 	router.HandleFunc("GET /api/healthz", handlerReadiness)
 	router.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
 	router.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
+	router.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	router.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID)
 	router.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	router.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	server.ListenAndServe()
@@ -98,6 +100,66 @@ func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Printf("%s", err)
 	}
+}
+
+
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	type fixedChirp struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	chirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fixedChirps := make([]fixedChirp, len(chirps))
+	for i, chirp := range chirps {
+		fixedChirps[i] = fixedChirp{
+			ID: chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body: chirp.Body,
+			UserID: chirp.UserID,
+		}
+	}
+	respondWithJSON(w, http.StatusOK, fixedChirps)
+}
+
+
+func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	type chirpRes struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	chirp, err := cfg.db.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	res := chirpRes{
+		ID: chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	}
+	respondWithJSON(w, http.StatusOK, res)
 }
 
 
