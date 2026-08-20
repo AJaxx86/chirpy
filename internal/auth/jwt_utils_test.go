@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
+
 	"github.com/google/uuid"
 )
 
@@ -56,6 +58,58 @@ func TestMakeAndValidateJWT(t *testing.T) {
 
 			if err == nil {
 				t.Errorf("ValidateJWT() error = nil, want rejection")
+			}
+		})
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	tests := []struct {
+		name      string
+		headers   http.Header
+		wantToken string
+		wantErr   bool
+	}{
+		{
+			name: "valid bearer token",
+			headers: http.Header{
+				"Authorization": []string{"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"},
+			},
+			wantToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+			wantErr:   false,
+		},
+		{
+			name: "valid bearer token with extra whitespace",
+			headers: http.Header{
+				"Authorization": []string{"Bearer   my-token-123   "},
+			},
+			wantToken: "my-token-123",
+			wantErr:   false,
+		},
+		{
+			name:      "missing authorization header",
+			headers:   http.Header{},
+			wantToken: "",
+			wantErr:   true,
+		},
+		{
+			name: "empty bearer token",
+			headers: http.Header{
+				"Authorization": []string{"Bearer "},
+			},
+			wantToken: "",
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotToken, err := GetBearerToken(tt.headers)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("GetBearerToken() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if gotToken != tt.wantToken {
+				t.Errorf("GetBearerToken() gotToken = %q, want %q", gotToken, tt.wantToken)
 			}
 		})
 	}

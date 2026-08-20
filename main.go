@@ -19,19 +19,21 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db *database.Queries
+	secret string
 }
 
 
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	secretToken := os.Getenv("SECRET")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Printf("Error loading DB: %s", err)
 		return
 	}
 
-	apiCfg := apiConfig{db: database.New(db)}
+	apiCfg := apiConfig{db: database.New(db), secret: secretToken}
 	router := http.NewServeMux()
 	server := &http.Server{
 		Addr: ":8080",
@@ -109,12 +111,14 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type loginRequest struct {
 		Email string `json:"email"`
 		Password string `json:"password"`
+		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
 	type response struct {
 		ID uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email string `json:"email"`
+		Token string `json:"token"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -141,11 +145,22 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	expireInSeconds := 3600
+	if req.ExpiresInSeconds > 0 && req.ExpiresInSeconds <= 3600 {
+		expireInSeconds = req.ExpiresInSeconds
+	}
+
+	jwtToken, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(expireInSeconds) * time.Second)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+	}
+
 	res := response{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: jwtToken,
 	}
 	respondWithJSON(w, http.StatusOK, res)
 }
@@ -214,7 +229,6 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type request struct {
 		Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
 	}
 	type response struct {
 		ID uuid.UUID `json:"id"`
@@ -224,9 +238,20 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		UserID uuid.UUID `json:"user_id"`
 	}
 
+	bearerToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	tokenID, err := auth.ValidateJWT(bearerToken, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	
 	decoder := json.NewDecoder(r.Body)
 	req := &request{}
-	err := decoder.Decode(req)
+	err = decoder.Decode(req)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, err.Error())
 		return
@@ -243,7 +268,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 
 	params := database.CreateChirpParams{
 		Body: cleanChirp(req.Body),
-		UserID: req.UserID,
+		UserID: tokenID,
 	}
 
 	chirp, err := cfg.db.CreateChirp(r.Context(), params)

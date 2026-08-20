@@ -5,6 +5,9 @@ import (
 	"github.com/google/uuid"
 	"time"
 	"fmt"
+	"net/http"
+	"strings"
+	"errors"
 )
 
 
@@ -44,4 +47,20 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	}
 
 	return parsedID, nil
+}
+
+
+func GetBearerToken(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("no authorization header included")
+	}
+
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", errors.New("malformed authorization header")
+	}
+
+	return token, nil
 }
