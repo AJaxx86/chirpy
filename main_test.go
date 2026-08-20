@@ -169,12 +169,12 @@ func TestHandlerCreateUser(t *testing.T) {
 	cfg := apiConfig{db: database.New(db)}
 	createdAt := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	mock.ExpectQuery("INSERT INTO users").
-		WithArgs("person@example.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email"}).
-			AddRow("3e9f4e1f-3a2a-4d41-a31f-616b84dcd068", createdAt, createdAt, "person@example.com"))
+		WithArgs("person@example.com", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
+			AddRow("3e9f4e1f-3a2a-4d41-a31f-616b84dcd068", createdAt, createdAt, "person@example.com", "hashed_secret"))
 
 	rec := httptest.NewRecorder()
-	cfg.handlerCreateUser(rec, httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"person@example.com"}`)))
+	cfg.handlerCreateUser(rec, httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"person@example.com","password":"secretpassword"}`)))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -226,7 +226,7 @@ func TestHandlerReset(t *testing.T) {
 	if got := cfg.fileserverHits.Load(); got != 0 {
 		t.Errorf("visit count = %d, want 0", got)
 	}
-	if got := rec.Body.String(); got != "Visits have been reset to 0, and all users removed." {
+	if got := rec.Body.String(); got != "Visits reset to 0, all users removed." {
 		t.Errorf("body = %q, want reset confirmation", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

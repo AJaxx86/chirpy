@@ -353,7 +353,7 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	body := []byte("Visits reset to 0, all users removed.")
 	_, err := w.Write(body)
 	if err != nil {
-		fmt.Sprintf("%s", err)
+		fmt.Printf("%s", err)
 	}
 }
 
