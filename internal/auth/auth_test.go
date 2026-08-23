@@ -1,12 +1,41 @@
 package auth
 
 import (
+	"encoding/hex"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestHashAndCheckPassword(t *testing.T) {
+	const password = "correct horse battery staple"
+
+	hash, err := HashPassword(password)
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	if hash == password {
+		t.Error("HashPassword() returned the plaintext password")
+	}
+
+	matches, err := CheckPasswordHash(password, hash)
+	if err != nil {
+		t.Fatalf("CheckPasswordHash() error = %v", err)
+	}
+	if !matches {
+		t.Error("CheckPasswordHash() = false, want true for the original password")
+	}
+
+	matches, err = CheckPasswordHash("incorrect password", hash)
+	if err != nil {
+		t.Fatalf("CheckPasswordHash() error = %v", err)
+	}
+	if matches {
+		t.Error("CheckPasswordHash() = true, want false for an incorrect password")
+	}
+}
 
 func TestMakeAndValidateJWT(t *testing.T) {
 	userID := uuid.MustParse("3e9f4e1f-3a2a-4d41-a31f-616b84dcd068")
@@ -112,5 +141,26 @@ func TestGetBearerToken(t *testing.T) {
 				t.Errorf("GetBearerToken() gotToken = %q, want %q", gotToken, tt.wantToken)
 			}
 		})
+	}
+}
+
+func TestMakeRefreshToken(t *testing.T) {
+	token1 := MakeRefreshToken()
+	token2 := MakeRefreshToken()
+
+	if len(token1) != 64 {
+		t.Errorf("MakeRefreshToken() token length = %d, want 64", len(token1))
+	}
+
+	decoded, err := hex.DecodeString(token1)
+	if err != nil {
+		t.Fatalf("MakeRefreshToken() returned invalid hex string: %v", err)
+	}
+	if len(decoded) != 32 {
+		t.Errorf("MakeRefreshToken() decoded byte length = %d, want 32", len(decoded))
+	}
+
+	if token1 == token2 {
+		t.Errorf("MakeRefreshToken() generated identical tokens: %s", token1)
 	}
 }

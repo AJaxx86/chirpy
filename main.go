@@ -14,12 +14,15 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/google/uuid"
 	"time"
+	"errors"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db *database.Queries
 	secret string
+	jwtExpireInSeconds int
+	refreshTokenExpireInDays int
 }
 
 
@@ -33,7 +36,7 @@ func main() {
 		return
 	}
 
-	apiCfg := apiConfig{db: database.New(db), secret: secretToken}
+	apiCfg := apiConfig{db: database.New(db), secret: secretToken, jwtExpireInSeconds: 3600, refreshTokenExpireInDays: 60}
 	router := http.NewServeMux()
 	server := &http.Server{
 		Addr: ":8080",
@@ -45,6 +48,8 @@ func main() {
 	router.HandleFunc("GET /api/healthz", handlerReadiness)
 	router.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	router.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	router.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
+	router.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
 	router.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	router.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	router.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID)
@@ -111,14 +116,14 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type loginRequest struct {
 		Email string `json:"email"`
 		Password string `json:"password"`
-		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
 	type response struct {
 		ID uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email string `json:"email"`
-		Token string `json:"token"`
+		AccessToken string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -145,14 +150,22 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expireInSeconds := 3600
-	if req.ExpiresInSeconds > 0 && req.ExpiresInSeconds <= 3600 {
-		expireInSeconds = req.ExpiresInSeconds
-	}
-
-	jwtToken, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(expireInSeconds) * time.Second)
+	jwtToken, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(cfg.jwtExpireInSeconds) * time.Second)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	refreshToken := auth.MakeRefreshToken()
+	rtParams := database.StoreRefreshTokenParams{
+		Token: refreshToken,
+		UserID: user.ID,
+		ExpiresAt: time.Now().Add(time.Duration(cfg.refreshTokenExpireInDays) * 24 * time.Hour),
+	}
+	_, err = cfg.db.StoreRefreshToken(r.Context(), rtParams)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	res := response{
@@ -160,9 +173,81 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
-		Token: jwtToken,
+		AccessToken: jwtToken,
+		RefreshToken: refreshToken,
 	}
 	respondWithJSON(w, http.StatusOK, res)
+}
+
+
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+	type response struct {
+		NewJWT string `json:"token"`
+	}
+
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "couldn't parse auth token")
+		return
+	}
+
+	tokenDetails, err := cfg.db.GetUserFromRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	if tokenDetails.RevokedAt.Valid {
+		respondWithError(w, http.StatusUnauthorized, "refresh token revoked")
+		return
+	}
+	if time.Now().After(tokenDetails.ExpiresAt) {
+		respondWithError(w, http.StatusUnauthorized, "refresh token expired")
+		return
+	}
+
+	jwt, err := auth.MakeJWT(tokenDetails.UserID, cfg.secret, time.Duration(cfg.jwtExpireInSeconds) * time.Second)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	res := response{NewJWT: jwt}
+	respondWithJSON(w, http.StatusOK, res)
+}
+
+
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "couldn't parse auth token")
+		return
+	}
+
+	tokenDetails, err := cfg.db.GetUserFromRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, http.StatusUnauthorized, "invalid refresh token")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if tokenDetails.RevokedAt.Valid {
+		respondWithError(w, http.StatusUnauthorized, "refresh token already revoked")
+		return
+	}
+	if time.Now().After(tokenDetails.ExpiresAt) {
+		respondWithError(w, http.StatusUnauthorized, "refresh token already expired")
+		return
+	}
+
+	_, err = cfg.db.RevokeRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 
@@ -248,7 +333,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	
+
 	decoder := json.NewDecoder(r.Body)
 	req := &request{}
 	err = decoder.Decode(req)
