@@ -53,6 +53,7 @@ func main() {
 	router.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
 	router.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	router.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	router.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerDeleteChirp)
 	router.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID)
 	router.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	router.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
@@ -211,7 +212,7 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 		respondWithError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	
+
 	newEmail := req.Email
 	newPassword, err := auth.HashPassword(req.Password)
 	if err != nil {
@@ -430,6 +431,43 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		UserID: chirp.UserID,
 	}
 	respondWithJSON(w, http.StatusCreated, res)
+}
+
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	chirp, err := cfg.db.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "chirp doesn't exist")
+		return
+	}
+
+	if userID != chirp.UserID {
+		respondWithError(w, http.StatusForbidden, "attempted to delete someone else's chirp")
+		return
+	}
+
+	if err := cfg.db.DeleteChirpByID(r.Context(), chirpID); err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 
