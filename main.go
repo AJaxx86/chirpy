@@ -48,6 +48,7 @@ func main() {
 	router.HandleFunc("GET /api/healthz", handlerReadiness)
 	router.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	router.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	router.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 	router.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	router.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
 	router.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
@@ -175,6 +176,65 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		AccessToken: jwtToken,
 		RefreshToken: refreshToken,
+	}
+	respondWithJSON(w, http.StatusOK, res)
+}
+
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	type requestBody struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+	type responseBody struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email string `json:"email"`
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "couldn't parse auth token")
+		return
+	}
+
+	req := &requestBody{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(req); err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	
+	newEmail := req.Email
+	newPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	params := database.UpdateUserInfoParams{
+		ID: userID,
+		Email: newEmail,
+		HashedPassword: newPassword,
+	}
+	newInfo, err := cfg.db.UpdateUserInfo(r.Context(), params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	res := responseBody{
+		ID: newInfo.ID,
+		CreatedAt: newInfo.CreatedAt,
+		UpdatedAt: newInfo.UpdatedAt,
+		Email: newInfo.Email,
 	}
 	respondWithJSON(w, http.StatusOK, res)
 }
@@ -383,7 +443,6 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email string `json:"email"`
-		Password string `json:"password"`
 	}
 
 	req := &request{}
@@ -419,7 +478,6 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
-		Password: req.Password,
 	}
 
 	respondWithJSON(w, http.StatusCreated, res)
