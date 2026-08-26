@@ -123,3 +123,6 @@ To run unit tests across packages:
 ```bash
 go test ./...
 ```
+
+## AI Usage
+AI was used for writing this README, as well as the tests, and everything else was hand-written by me.
