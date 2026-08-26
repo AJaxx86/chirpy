@@ -21,8 +21,8 @@ func TestCreateUser(t *testing.T) {
 	createdAt := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(regexp.QuoteMeta(createUser)).
 		WithArgs("person@example.com", "hashed_secret").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
-			AddRow(id.String(), createdAt, createdAt, "person@example.com", "hashed_secret"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+			AddRow(id.String(), createdAt, createdAt, "person@example.com", "hashed_secret", false))
 
 	user, err := New(db).CreateUser(context.Background(), CreateUserParams{
 		Email:          "person@example.com",
